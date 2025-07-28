@@ -7,7 +7,7 @@ const User = require('../models/userModel');
 const Workspace = require('../models/workspaceModel');
 const catchAsync = require('../../utils/catchAsync');
 const AppError = require('../../utils/appError');
-const upload = require('../../utils/s3Upload');
+const { upload, uploadToS3 } = require('../../utils/s3Upload'); // Fixed import
 const googleService = require('../../services/googleCalendarService');
 
 /**
@@ -113,9 +113,32 @@ exports.getAllTasks = catchAsync(async (req, res, next) => {
   });
 });
 
+/**
+ * Get a single task by ID
+ */
+exports.getTask = catchAsync(async (req, res, next) => {
+  const task = await Task.findById(req.params.id);
+  if (!task) {
+    return next(new AppError('No task found with that ID', 404));
+  }
+  const workspace = await Workspace.findOne({
+    _id: task.workspace,
+    owner: req.user.id,
+  });
+  if (!workspace) {
+    return next(new AppError('You do not have permission to view this task.', 403));
+  }
+  res.status(200).json({
+    status: 'success',
+    data: {
+      task,
+    },
+  });
+});
 
-// --- Other Controller Functions (Largely Unchanged) ---
-
+/**
+ * Update an existing task
+ */
 exports.updateTask = catchAsync(async (req, res, next) => {
   const taskToUpdate = await Task.findById(req.params.id).select('+googleEventId');
   if (!taskToUpdate) {
@@ -131,6 +154,7 @@ exports.updateTask = catchAsync(async (req, res, next) => {
     runValidators: true,
   });
 
+  // Update Google Calendar event if it exists
   if (taskToUpdate.googleEventId) {
     const user = await User.findById(req.user.id).select('+googleRefreshToken');
     if (user && user.googleRefreshToken) {
@@ -144,7 +168,7 @@ exports.updateTask = catchAsync(async (req, res, next) => {
         await googleService.updateCalendarEvent(oauth2Client, taskToUpdate.googleEventId, {
           title: updatedTask.title,
           description: updatedTask.description,
-          dueDate: updatedTask.dueDate.toISOString(),
+          dueDate: updatedTask.dueDate ? updatedTask.dueDate.toISOString() : null,
         });
       } catch (error) {
         console.error('Failed to update Google Calendar event:', error.message);
@@ -160,6 +184,9 @@ exports.updateTask = catchAsync(async (req, res, next) => {
   });
 });
 
+/**
+ * Delete a task
+ */
 exports.deleteTask = catchAsync(async (req, res, next) => {
   const taskToDelete = await Task.findById(req.params.id).select('+googleEventId');
   if (!taskToDelete) {
@@ -170,6 +197,7 @@ exports.deleteTask = catchAsync(async (req, res, next) => {
     return next(new AppError('You do not have permission to delete this task.', 403));
   }
 
+  // Delete Google Calendar event if it exists
   if (taskToDelete.googleEventId) {
     const user = await User.findById(req.user.id).select('+googleRefreshToken');
     if (user && user.googleRefreshToken) {
@@ -195,19 +223,25 @@ exports.deleteTask = catchAsync(async (req, res, next) => {
   });
 });
 
+/**
+ * Parse natural language text to extract task details
+ */
 exports.parseTask = catchAsync(async (req, res, next) => {
   const { text } = req.body;
   if (!text) {
     return next(new AppError('Please provide text to parse.', 400));
   }
+  
   const parsedResults = chrono.parse(text);
   let title = text;
   let dueDate = null;
+  
   if (parsedResults.length > 0) {
     const parsedResult = parsedResults[0];
     title = text.substring(0, parsedResult.index).trim();
     dueDate = parsedResult.start.date();
   }
+  
   res.status(200).json({
     status: 'success',
     data: {
@@ -218,27 +252,156 @@ exports.parseTask = catchAsync(async (req, res, next) => {
   });
 });
 
+/**
+ * Middleware for handling file upload
+ */
 exports.uploadTaskFile = upload.single('attachment');
 
+/**
+ * Add attachment to a task
+ */
 exports.addAttachmentToTask = catchAsync(async (req, res, next) => {
   if (!req.file) {
     return next(new AppError('Please upload a file.', 400));
   }
+  
   const task = await Task.findById(req.params.id);
   if (!task) {
     return next(new AppError('No task found with that ID', 404));
   }
+  
   const workspace = await Workspace.findOne({ _id: task.workspace, owner: req.user.id });
   if (!workspace) {
     return next(new AppError('You do not have permission to modify this task.', 403));
   }
-  const newAttachment = {
-    fileName: req.file.originalname,
-    fileUrl: req.file.location,
-    fileKey: req.file.key,
-  };
-  task.attachments.push(newAttachment);
+
+  try {
+    // Upload file to S3 using the custom upload function
+    const uploadResult = await uploadToS3(req.file, req.user.id, req.params.id);
+    
+    const newAttachment = {
+      fileName: req.file.originalname,
+      fileUrl: uploadResult.Location, // S3 URL from upload result
+      fileKey: uploadResult.Key,      // S3 key from upload result
+      fileSize: req.file.size,
+      contentType: req.file.mimetype,
+      uploadedAt: new Date(),
+    };
+    
+    if (!task.attachments) {
+      task.attachments = [];
+    }
+    
+    task.attachments.push(newAttachment);
+    await task.save();
+    
+    res.status(200).json({
+      status: 'success',
+      message: 'File uploaded successfully',
+      data: {
+        task,
+        attachment: newAttachment,
+      },
+    });
+  } catch (error) {
+    console.error('S3 upload error:', error);
+    return next(new AppError('Failed to upload file to S3. Please try again.', 500));
+  }
+});
+
+/**
+ * Remove attachment from a task
+ */
+exports.removeAttachmentFromTask = catchAsync(async (req, res, next) => {
+  const { attachmentId } = req.params;
+  
+  const task = await Task.findById(req.params.id);
+  if (!task) {
+    return next(new AppError('No task found with that ID', 404));
+  }
+  
+  const workspace = await Workspace.findOne({ _id: task.workspace, owner: req.user.id });
+  if (!workspace) {
+    return next(new AppError('You do not have permission to modify this task.', 403));
+  }
+
+  const attachmentIndex = task.attachments.findIndex(
+    attachment => attachment._id.toString() === attachmentId
+  );
+  
+  if (attachmentIndex === -1) {
+    return next(new AppError('Attachment not found', 404));
+  }
+
+  // Remove the attachment from the array
+  const removedAttachment = task.attachments[attachmentIndex];
+  task.attachments.splice(attachmentIndex, 1);
+  
   await task.save();
+
+  // TODO: Optionally delete the file from S3 here
+  // You might want to implement a cleanup service for this
+  
+  res.status(200).json({
+    status: 'success',
+    message: 'Attachment removed successfully',
+    data: {
+      task,
+      removedAttachment,
+    },
+  });
+});
+
+/**
+ * Middleware to set workspace and user IDs from params/auth
+ */
+exports.setWorkspaceUserIds = (req, res, next) => {
+  if (!req.body.workspace) req.body.workspace = req.params.workspaceId;
+  if (!req.body.user) req.body.user = req.user.id;
+  next();
+};
+
+/**
+ * Get all attachments for a task
+ */
+exports.getTaskAttachments = catchAsync(async (req, res, next) => {
+  const task = await Task.findById(req.params.id).select('attachments');
+  if (!task) {
+    return next(new AppError('No task found with that ID', 404));
+  }
+  
+  const workspace = await Workspace.findOne({ _id: task.workspace, owner: req.user.id });
+  if (!workspace) {
+    return next(new AppError('You do not have permission to view this task.', 403));
+  }
+  
+  res.status(200).json({
+    status: 'success',
+    results: task.attachments ? task.attachments.length : 0,
+    data: {
+      attachments: task.attachments || [],
+    },
+  });
+});
+
+/**
+ * Mark task as completed
+ */
+exports.markTaskCompleted = catchAsync(async (req, res, next) => {
+  const task = await Task.findById(req.params.id);
+  if (!task) {
+    return next(new AppError('No task found with that ID', 404));
+  }
+  
+  const workspace = await Workspace.findOne({ _id: task.workspace, owner: req.user.id });
+  if (!workspace) {
+    return next(new AppError('You do not have permission to modify this task.', 403));
+  }
+
+  task.status = 'completed';
+  task.completedAt = new Date();
+  await task.save();
+
   res.status(200).json({
     status: 'success',
     data: {
@@ -247,24 +410,24 @@ exports.addAttachmentToTask = catchAsync(async (req, res, next) => {
   });
 });
 
-exports.setWorkspaceUserIds = (req, res, next) => {
-  if (!req.body.workspace) req.body.workspace = req.params.workspaceId;
-  if (!req.body.user) req.body.user = req.user.id;
-  next();
-};
-
-exports.getTask = catchAsync(async (req, res, next) => {
+/**
+ * Mark task as pending/incomplete
+ */
+exports.markTaskPending = catchAsync(async (req, res, next) => {
   const task = await Task.findById(req.params.id);
   if (!task) {
     return next(new AppError('No task found with that ID', 404));
   }
-  const workspace = await Workspace.findOne({
-    _id: task.workspace,
-    owner: req.user.id,
-  });
+  
+  const workspace = await Workspace.findOne({ _id: task.workspace, owner: req.user.id });
   if (!workspace) {
-    return next(new AppError('You do not have permission to view this task.', 403));
+    return next(new AppError('You do not have permission to modify this task.', 403));
   }
+
+  task.status = 'pending';
+  task.completedAt = undefined;
+  await task.save();
+
   res.status(200).json({
     status: 'success',
     data: {
