@@ -1,17 +1,18 @@
 /**
- * Task Model
+ * Enhanced Task Model - Single User with Manager Meeting History
  * 
- * MongoDB schema for tasks with comprehensive features:
+ * MongoDB schema for tasks with comprehensive single-user features:
  * - Task management with priorities, statuses, and deadlines
  * - Subtasks and checklist support
- * - File attachments and rich content
+ * - AWS S3 file attachments
  * - Recurring task functionality
  * - Progress tracking and time management
- * - Comments and collaboration
- * - Manager meeting preparation support
+ * - Personal notes system (no collaboration)
+ * - Enhanced manager meeting preparation with full history
+ * - Meeting reference system for Company workspace
  * 
  * @author Nirpeksh Scale Up App
- * @version 1.0.0
+ * @version 2.0.0 - Enhanced for single user with meeting history
  */
 
 const mongoose = require('mongoose');
@@ -38,15 +39,15 @@ const subtaskSchema = new Schema({
     default: null
   },
   
-  completedBy: {
-    type: Schema.Types.ObjectId,
-    ref: 'User',
-    default: null
-  },
-  
   order: {
     type: Number,
     default: 0
+  },
+  
+  notes: {
+    type: String,
+    trim: true,
+    maxlength: [500, 'Subtask notes cannot exceed 500 characters']
   },
   
   createdAt: {
@@ -56,20 +57,25 @@ const subtaskSchema = new Schema({
 }, { _id: true });
 
 /**
- * Comment Schema for task discussions
+ * Personal Notes Schema (replacing comments for single user)
  */
-const commentSchema = new Schema({
+const personalNoteSchema = new Schema({
   content: {
     type: String,
-    required: [true, 'Comment content is required'],
+    required: [true, 'Note content is required'],
     trim: true,
-    maxlength: [1000, 'Comment cannot exceed 1000 characters']
+    maxlength: [2000, 'Note cannot exceed 2000 characters']
   },
   
-  author: {
-    type: Schema.Types.ObjectId,
-    ref: 'User',
-    required: true
+  noteType: {
+    type: String,
+    enum: ['general', 'progress', 'blocker', 'idea', 'meeting_prep'],
+    default: 'general'
+  },
+  
+  isImportant: {
+    type: Boolean,
+    default: false
   },
   
   isEdited: {
@@ -92,12 +98,6 @@ const commentSchema = new Schema({
  * Time Log Schema for time tracking
  */
 const timeLogSchema = new Schema({
-  user: {
-    type: Schema.Types.ObjectId,
-    ref: 'User',
-    required: true
-  },
-  
   startTime: {
     type: Date,
     required: true
@@ -125,6 +125,12 @@ const timeLogSchema = new Schema({
     default: false // True when timer is running
   },
   
+  sessionType: {
+    type: String,
+    enum: ['focused_work', 'research', 'meeting', 'review', 'other'],
+    default: 'focused_work'
+  },
+  
   createdAt: {
     type: Date,
     default: Date.now
@@ -132,7 +138,149 @@ const timeLogSchema = new Schema({
 }, { _id: true });
 
 /**
- * Main Task Schema Definition
+ * Enhanced Manager Meeting History Schema
+ */
+const meetingHistorySchema = new Schema({
+  meetingId: {
+    type: Schema.Types.ObjectId,
+    ref: 'ManagerMeeting',
+    required: true
+  },
+  
+  discussedAt: {
+    type: Date,
+    required: true
+  },
+  
+  taskStatus: {
+    type: String,
+    enum: ['todo', 'in_progress', 'blocked', 'review', 'done', 'cancelled'],
+    required: true
+  },
+  
+  progressPercentage: {
+    type: Number,
+    min: 0,
+    max: 100,
+    default: 0
+  },
+  
+  managerFeedback: {
+    type: String,
+    trim: true,
+    maxlength: [1000, 'Manager feedback cannot exceed 1000 characters']
+  },
+  
+  actionItemsGiven: [{
+    item: {
+      type: String,
+      required: true,
+      trim: true,
+      maxlength: [200, 'Action item cannot exceed 200 characters']
+    },
+    dueDate: Date,
+    priority: {
+      type: String,
+      enum: ['low', 'medium', 'high', 'urgent'],
+      default: 'medium'
+    },
+    isCompleted: { type: Boolean, default: false },
+    completedAt: Date
+  }],
+  
+  blockersDiscussed: [{
+    description: {
+      type: String,
+      required: true,
+      trim: true,
+      maxlength: [300, 'Blocker description cannot exceed 300 characters']
+    },
+    severity: {
+      type: String,
+      enum: ['low', 'medium', 'high', 'critical'],
+      default: 'medium'
+    },
+    resolution: {
+      type: String,
+      trim: true,
+      maxlength: [500, 'Resolution cannot exceed 500 characters']
+    },
+    isResolved: { type: Boolean, default: false },
+    resolvedAt: Date
+  }],
+  
+  priorityChange: {
+    from: {
+      type: String,
+      enum: ['low', 'medium', 'high', 'urgent']
+    },
+    to: {
+      type: String,
+      enum: ['low', 'medium', 'high', 'urgent']
+    },
+    reason: {
+      type: String,
+      trim: true,
+      maxlength: [300, 'Priority change reason cannot exceed 300 characters']
+    }
+  },
+  
+  nextSteps: {
+    type: String,
+    trim: true,
+    maxlength: [1000, 'Next steps cannot exceed 1000 characters']
+  },
+  
+  userNotes: {
+    type: String,
+    trim: true,
+    maxlength: [1500, 'User notes cannot exceed 1500 characters']
+  }
+}, { _id: true });
+
+/**
+ * Priority Change Tracking Schema
+ */
+const priorityChangeSchema = new Schema({
+  from: {
+    type: String,
+    enum: ['low', 'medium', 'high', 'urgent'],
+    required: true
+  },
+  
+  to: {
+    type: String,
+    enum: ['low', 'medium', 'high', 'urgent'],
+    required: true
+  },
+  
+  reason: {
+    type: String,
+    required: true,
+    trim: true,
+    maxlength: [300, 'Priority change reason cannot exceed 300 characters']
+  },
+  
+  trigger: {
+    type: String,
+    enum: ['user_decision', 'manager_feedback', 'deadline_change', 'blocker_resolved', 'business_priority'],
+    required: true
+  },
+  
+  relatedMeetingId: {
+    type: Schema.Types.ObjectId,
+    ref: 'ManagerMeeting',
+    default: null
+  },
+  
+  changedAt: {
+    type: Date,
+    default: Date.now
+  }
+}, { _id: true });
+
+/**
+ * Main Task Schema Definition - Enhanced for Single User
  */
 const taskSchema = new Schema({
   // Basic Information
@@ -206,30 +354,12 @@ const taskSchema = new Schema({
     index: true // For manager meeting views
   },
   
-  // Assignment and Ownership
+  // Single User Ownership (simplified)
   createdBy: {
     type: Schema.Types.ObjectId,
     ref: 'User',
     required: [true, 'Task must have a creator'],
     index: true
-  },
-  
-  assignedTo: {
-    type: Schema.Types.ObjectId,
-    ref: 'User',
-    default: null,
-    index: true
-  },
-  
-  assignedAt: {
-    type: Date,
-    default: null
-  },
-  
-  assignedBy: {
-    type: Schema.Types.ObjectId,
-    ref: 'User',
-    default: null
   },
   
   // Timing and Scheduling
@@ -294,6 +424,11 @@ const taskSchema = new Schema({
     nextDueDate: {
       type: Date,
       default: null
+    },
+    
+    lastGenerated: {
+      type: Date,
+      default: null
     }
   },
   
@@ -326,44 +461,45 @@ const taskSchema = new Schema({
     index: true
   },
   
-  completedBy: {
-    type: Schema.Types.ObjectId,
-    ref: 'User',
-    default: null
-  },
-  
-  // Manager Meeting Support
+  // Enhanced Manager Meeting Support
   managerNotes: {
-    lastDiscussed: {
+    // Current status
+    isKeyTask: {
+      type: Boolean,
+      default: false
+    },
+    
+    currentPriority: {
+      type: String,
+      enum: ['low', 'medium', 'high', 'urgent'],
+      default: null
+    },
+    
+    // Meeting tracking
+    lastDiscussedAt: {
       type: Date,
       default: null
     },
     
-    nextMeetingDate: {
+    nextReviewDate: {
       type: Date,
       default: null
     },
     
-    priorityFeedback: {
+    totalMeetingsDiscussed: {
+      type: Number,
+      default: 0,
+      min: 0
+    },
+    
+    // Current manager context
+    currentManagerFeedback: {
       type: String,
       trim: true,
-      maxlength: [1000, 'Priority feedback cannot exceed 1000 characters']
+      maxlength: [1000, 'Current manager feedback cannot exceed 1000 characters']
     },
     
-    actionItems: [{
-      item: {
-        type: String,
-        required: true,
-        trim: true,
-        maxlength: [200, 'Action item cannot exceed 200 characters']
-      },
-      dueDate: Date,
-      isCompleted: { type: Boolean, default: false },
-      completedAt: Date,
-      createdAt: { type: Date, default: Date.now }
-    }],
-    
-    blockers: [{
+    currentBlockers: [{
       description: {
         type: String,
         required: true,
@@ -375,22 +511,103 @@ const taskSchema = new Schema({
         enum: ['low', 'medium', 'high', 'critical'],
         default: 'medium'
       },
-      isResolved: { type: Boolean, default: false },
-      resolvedAt: Date,
-      createdAt: { type: Date, default: Date.now }
-    }]
+      identifiedAt: {
+        type: Date,
+        default: Date.now
+      },
+      isResolved: {
+        type: Boolean,
+        default: false
+      },
+      resolvedAt: Date
+    }],
+    
+    currentActionItems: [{
+      item: {
+        type: String,
+        required: true,
+        trim: true,
+        maxlength: [200, 'Action item cannot exceed 200 characters']
+      },
+      dueDate: Date,
+      priority: {
+        type: String,
+        enum: ['low', 'medium', 'high', 'urgent'],
+        default: 'medium'
+      },
+      isCompleted: {
+        type: Boolean,
+        default: false
+      },
+      completedAt: Date,
+      assignedAt: {
+        type: Date,
+        default: Date.now
+      }
+    }],
+    
+    // Meeting history references
+    meetingHistory: [meetingHistorySchema],
+    
+    // Priority change tracking
+    priorityChanges: [priorityChangeSchema],
+    
+    // Meeting preparation notes
+    preparationNotes: {
+      type: String,
+      trim: true,
+      maxlength: [2000, 'Preparation notes cannot exceed 2000 characters']
+    },
+    
+    lastPreparationDate: {
+      type: Date,
+      default: null
+    }
   },
   
-  // File Attachments
+  // AWS S3 File Attachments (Updated for S3)
   attachments: [{
-    filename: { type: String, required: true },
-    originalName: { type: String, required: true },
-    mimeType: { type: String, required: true },
-    size: { type: Number, required: true },
-    url: { type: String, required: true }, // Cloudinary URL
-    publicId: { type: String, required: true }, // Cloudinary public ID
-    uploadedBy: { type: Schema.Types.ObjectId, ref: 'User', required: true },
-    uploadedAt: { type: Date, default: Date.now }
+    filename: { 
+      type: String, 
+      required: true 
+    },
+    originalName: { 
+      type: String, 
+      required: true 
+    },
+    mimeType: { 
+      type: String, 
+      required: true 
+    },
+    size: { 
+      type: Number, 
+      required: true 
+    },
+    s3Key: { 
+      type: String, 
+      required: true // S3 object key
+    },
+    s3Bucket: { 
+      type: String, 
+      required: true,
+      default: 'mytasktracking'
+    },
+    url: { 
+      type: String, 
+      required: true // Pre-signed or public URL
+    },
+    uploadedAt: { 
+      type: Date, 
+      default: Date.now 
+    },
+    isPublic: {
+      type: Boolean,
+      default: false
+    },
+    expiresAt: {
+      type: Date,
+      default: null // For temporary files
+    }
   }],
   
   // Links and References
@@ -412,22 +629,19 @@ const taskSchema = new Schema({
       trim: true,
       maxlength: [200, 'Link description cannot exceed 200 characters']
     },
-    addedBy: { type: Schema.Types.ObjectId, ref: 'User', required: true },
-    addedAt: { type: Date, default: Date.now }
+    addedAt: { 
+      type: Date, 
+      default: Date.now 
+    }
   }],
   
-  // Collaboration
-  comments: [commentSchema],
-  
-  watchers: [{
-    type: Schema.Types.ObjectId,
-    ref: 'User'
-  }],
+  // Personal Notes (replacing collaboration comments)
+  personalNotes: [personalNoteSchema],
   
   // Time Tracking
   timeLogs: [timeLogSchema],
   
-  // Dependencies
+  // Dependencies (for task relationships)
   dependencies: [{
     task: {
       type: Schema.Types.ObjectId,
@@ -439,7 +653,15 @@ const taskSchema = new Schema({
       enum: ['blocks', 'blocked_by', 'related'],
       default: 'related'
     },
-    createdAt: { type: Date, default: Date.now }
+    description: {
+      type: String,
+      trim: true,
+      maxlength: [200, 'Dependency description cannot exceed 200 characters']
+    },
+    createdAt: { 
+      type: Date, 
+      default: Date.now 
+    }
   }],
   
   // Status and Metadata
@@ -451,12 +673,6 @@ const taskSchema = new Schema({
   
   archivedAt: {
     type: Date,
-    default: null
-  },
-  
-  archivedBy: {
-    type: Schema.Types.ObjectId,
-    ref: 'User',
     default: null
   },
   
@@ -519,11 +735,25 @@ taskSchema.virtual('hasActiveTimer').get(function() {
   return this.timeLogs.some(log => log.isActive);
 });
 
+// Meeting discussion frequency
+taskSchema.virtual('meetingDiscussionFrequency').get(function() {
+  return this.managerNotes.meetingHistory.length;
+});
+
+// Has unresolved blockers
+taskSchema.virtual('hasUnresolvedBlockers').get(function() {
+  return this.managerNotes.currentBlockers.some(blocker => !blocker.isResolved);
+});
+
+// Pending action items count
+taskSchema.virtual('pendingActionItemsCount').get(function() {
+  return this.managerNotes.currentActionItems.filter(item => !item.isCompleted).length;
+});
+
 /**
  * Indexes for Performance
  */
 taskSchema.index({ workspace: 1, status: 1 });
-taskSchema.index({ assignedTo: 1, status: 1 });
 taskSchema.index({ createdBy: 1, createdAt: -1 });
 taskSchema.index({ dueDate: 1, status: 1 });
 taskSchema.index({ priority: 1, status: 1 });
@@ -533,8 +763,13 @@ taskSchema.index({ category: 1 });
 taskSchema.index({ parentTask: 1 });
 taskSchema.index({ lastActivityAt: -1 });
 
+// Enhanced indexes for manager meeting features
+taskSchema.index({ 'managerNotes.lastDiscussedAt': -1 });
+taskSchema.index({ 'managerNotes.nextReviewDate': 1 });
+taskSchema.index({ workspace: 1, isKeyTask: 1, 'managerNotes.lastDiscussedAt': -1 });
+
 // Compound indexes for common queries
-taskSchema.index({ workspace: 1, assignedTo: 1, status: 1 });
+taskSchema.index({ workspace: 1, status: 1, priority: -1 });
 taskSchema.index({ workspace: 1, isKeyTask: 1, status: 1 });
 taskSchema.index({ workspace: 1, dueDate: 1, status: 1 });
 
@@ -565,24 +800,41 @@ taskSchema.pre('save', function(next) {
       this.completedAt = new Date();
     } else if (this.status !== 'done') {
       this.completedAt = null;
-      this.completedBy = null;
     }
   }
+  
+  // Track priority changes
+  if (this.isModified('priority') && !this.isNew) {
+    const oldPriority = this.managerNotes.currentPriority || 'medium';
+    if (oldPriority !== this.priority) {
+      this.managerNotes.priorityChanges.push({
+        from: oldPriority,
+        to: this.priority,
+        reason: 'Priority updated by user',
+        trigger: 'user_decision',
+        changedAt: new Date()
+      });
+    }
+  }
+  
+  // Update manager notes current priority
+  this.managerNotes.currentPriority = this.priority;
   
   next();
 });
 
 /**
- * Instance Methods
+ * Instance Methods - Enhanced for Single User
  */
 
 // Add subtask
-taskSchema.methods.addSubtask = function(title, order = null) {
+taskSchema.methods.addSubtask = function(title, order = null, notes = '') {
   const newOrder = order !== null ? order : this.subtasks.length;
   
   this.subtasks.push({
     title: title.trim(),
     order: newOrder,
+    notes: notes.trim(),
     isCompleted: false
   });
   
@@ -590,7 +842,7 @@ taskSchema.methods.addSubtask = function(title, order = null) {
 };
 
 // Toggle subtask completion
-taskSchema.methods.toggleSubtask = function(subtaskId, userId) {
+taskSchema.methods.toggleSubtask = function(subtaskId) {
   const subtask = this.subtasks.id(subtaskId);
   if (!subtask) {
     throw new Error('Subtask not found');
@@ -598,44 +850,54 @@ taskSchema.methods.toggleSubtask = function(subtaskId, userId) {
   
   subtask.isCompleted = !subtask.isCompleted;
   subtask.completedAt = subtask.isCompleted ? new Date() : null;
-  subtask.completedBy = subtask.isCompleted ? userId : null;
   
   return this.save();
 };
 
-// Add comment
-taskSchema.methods.addComment = function(content, authorId) {
-  this.comments.push({
+// Add personal note
+taskSchema.methods.addPersonalNote = function(content, noteType = 'general', isImportant = false) {
+  this.personalNotes.push({
     content: content.trim(),
-    author: authorId
+    noteType,
+    isImportant
   });
   
   return this.save();
 };
 
-// Add attachment
-taskSchema.methods.addAttachment = function(attachmentData) {
-  this.attachments.push(attachmentData);
+// Add S3 attachment
+taskSchema.methods.addS3Attachment = function(attachmentData) {
+  this.attachments.push({
+    filename: attachmentData.filename,
+    originalName: attachmentData.originalName,
+    mimeType: attachmentData.mimeType,
+    size: attachmentData.size,
+    s3Key: attachmentData.s3Key,
+    s3Bucket: attachmentData.s3Bucket || 'mytasktracking',
+    url: attachmentData.url,
+    isPublic: attachmentData.isPublic || false,
+    expiresAt: attachmentData.expiresAt || null
+  });
+  
   return this.save();
 };
 
 // Add link
-taskSchema.methods.addLink = function(title, url, description, addedBy) {
+taskSchema.methods.addLink = function(title, url, description = '') {
   this.links.push({
     title: title.trim(),
     url: url.trim(),
-    description: description ? description.trim() : '',
-    addedBy
+    description: description.trim()
   });
   
   return this.save();
 };
 
 // Start time tracking
-taskSchema.methods.startTimer = function(userId, description = '') {
+taskSchema.methods.startTimer = function(description = '', sessionType = 'focused_work') {
   // Stop any existing active timers
   this.timeLogs.forEach(log => {
-    if (log.isActive && log.user.toString() === userId.toString()) {
+    if (log.isActive) {
       log.isActive = false;
       log.endTime = new Date();
       log.duration = Math.round((log.endTime - log.startTime) / (1000 * 60));
@@ -644,9 +906,9 @@ taskSchema.methods.startTimer = function(userId, description = '') {
   
   // Start new timer
   this.timeLogs.push({
-    user: userId,
     startTime: new Date(),
     description: description.trim(),
+    sessionType,
     isActive: true
   });
   
@@ -654,13 +916,11 @@ taskSchema.methods.startTimer = function(userId, description = '') {
 };
 
 // Stop time tracking
-taskSchema.methods.stopTimer = function(userId) {
-  const activeLog = this.timeLogs.find(log => 
-    log.isActive && log.user.toString() === userId.toString()
-  );
+taskSchema.methods.stopTimer = function() {
+  const activeLog = this.timeLogs.find(log => log.isActive);
   
   if (!activeLog) {
-    throw new Error('No active timer found for this user');
+    throw new Error('No active timer found');
   }
   
   activeLog.isActive = false;
@@ -673,26 +933,58 @@ taskSchema.methods.stopTimer = function(userId) {
   return this.save();
 };
 
-// Add manager notes
-taskSchema.methods.addManagerFeedback = function(feedback, actionItems = [], blockers = []) {
-  this.managerNotes.lastDiscussed = new Date();
-  this.managerNotes.priorityFeedback = feedback;
-  
-  // Add action items
-  actionItems.forEach(item => {
-    this.managerNotes.actionItems.push({
-      item: item.item,
-      dueDate: item.dueDate
-    });
+// Add manager meeting history entry
+taskSchema.methods.addMeetingHistory = function(meetingId, meetingData) {
+  this.managerNotes.meetingHistory.push({
+    meetingId,
+    discussedAt: meetingData.discussedAt || new Date(),
+    taskStatus: this.status,
+    progressPercentage: this.progress,
+    managerFeedback: meetingData.managerFeedback || '',
+    actionItemsGiven: meetingData.actionItemsGiven || [],
+    blockersDiscussed: meetingData.blockersDiscussed || [],
+    priorityChange: meetingData.priorityChange || null,
+    nextSteps: meetingData.nextSteps || '',
+    userNotes: meetingData.userNotes || ''
   });
   
-  // Add blockers
-  blockers.forEach(blocker => {
-    this.managerNotes.blockers.push({
-      description: blocker.description,
-      severity: blocker.severity || 'medium'
-    });
+  this.managerNotes.lastDiscussedAt = meetingData.discussedAt || new Date();
+  this.managerNotes.totalMeetingsDiscussed += 1;
+  
+  // Update current manager feedback
+  if (meetingData.managerFeedback) {
+    this.managerNotes.currentManagerFeedback = meetingData.managerFeedback;
+  }
+  
+  // Add new action items to current list
+  if (meetingData.actionItemsGiven && meetingData.actionItemsGiven.length > 0) {
+    this.managerNotes.currentActionItems.push(...meetingData.actionItemsGiven);
+  }
+  
+  return this.save();
+};
+
+// Add blocker
+taskSchema.methods.addBlocker = function(description, severity = 'medium') {
+  this.managerNotes.currentBlockers.push({
+    description: description.trim(),
+    severity,
+    identifiedAt: new Date(),
+    isResolved: false
   });
+  
+  return this.save();
+};
+
+// Resolve blocker
+taskSchema.methods.resolveBlocker = function(blockerId) {
+  const blocker = this.managerNotes.currentBlockers.id(blockerId);
+  if (!blocker) {
+    throw new Error('Blocker not found');
+  }
+  
+  blocker.isResolved = true;
+  blocker.resolvedAt = new Date();
   
   return this.save();
 };
@@ -700,14 +992,21 @@ taskSchema.methods.addManagerFeedback = function(feedback, actionItems = [], blo
 // Mark as key task
 taskSchema.methods.markAsKeyTask = function(isKey = true) {
   this.isKeyTask = isKey;
+  this.managerNotes.isKeyTask = isKey;
+  return this.save();
+};
+
+// Prepare for manager meeting
+taskSchema.methods.prepareMeetingNotes = function(preparationNotes) {
+  this.managerNotes.preparationNotes = preparationNotes.trim();
+  this.managerNotes.lastPreparationDate = new Date();
   return this.save();
 };
 
 // Archive task
-taskSchema.methods.archive = function(archivedBy) {
+taskSchema.methods.archive = function() {
   this.isArchived = true;
   this.archivedAt = new Date();
-  this.archivedBy = archivedBy;
   return this.save();
 };
 
@@ -715,12 +1014,11 @@ taskSchema.methods.archive = function(archivedBy) {
 taskSchema.methods.restore = function() {
   this.isArchived = false;
   this.archivedAt = null;
-  this.archivedBy = null;
   return this.save();
 };
 
 /**
- * Static Methods
+ * Static Methods - Enhanced for Single User
  */
 
 // Find tasks by workspace
@@ -729,54 +1027,61 @@ taskSchema.statics.findByWorkspace = function(workspaceId, filters = {}) {
     workspace: workspaceId,
     isArchived: false,
     ...filters
-  }).populate('assignedTo createdBy', 'firstName lastName email')
-    .populate('workspace', 'name type');
+  }).populate('workspace', 'name type');
 };
 
-// Find key tasks for manager meetings
-taskSchema.statics.findKeyTasks = function(workspaceId, userId = null) {
-  const query = {
+// Find key tasks for manager meetings with history
+taskSchema.statics.findKeyTasksWithHistory = function(workspaceId, userId) {
+  return this.find({
     workspace: workspaceId,
     isKeyTask: true,
+    createdBy: userId,
     isArchived: false,
     status: { $ne: 'cancelled' }
-  };
+  }).populate('workspace', 'name type')
+    .sort({ 'managerNotes.lastDiscussedAt': -1, priority: -1, dueDate: 1 });
+};
+
+// Find tasks ready for manager discussion
+taskSchema.statics.findTasksReadyForDiscussion = function(workspaceId, userId, daysSinceLastDiscussion = 7) {
+  const cutoffDate = new Date();
+  cutoffDate.setDate(cutoffDate.getDate() - daysSinceLastDiscussion);
   
-  if (userId) {
-    query.$or = [
-      { createdBy: userId },
-      { assignedTo: userId }
-    ];
-  }
-  
-  return this.find(query)
-    .populate('assignedTo createdBy', 'firstName lastName email')
+  return this.find({
+    workspace: workspaceId,
+    createdBy: userId,
+    isKeyTask: true,
+    isArchived: false,
+    status: { $nin: ['done', 'cancelled'] },
+    $or: [
+      { 'managerNotes.lastDiscussedAt': { $lt: cutoffDate } },
+      { 'managerNotes.lastDiscussedAt': null },
+      { 'managerNotes.currentBlockers.isResolved': false }
+    ]
+  }).populate('workspace', 'name type')
     .sort({ priority: -1, dueDate: 1 });
 };
 
 // Find overdue tasks
-taskSchema.statics.findOverdue = function(workspaceId = null) {
+taskSchema.statics.findOverdue = function(workspaceId = null, userId = null) {
   const query = {
     dueDate: { $lt: new Date() },
     status: { $nin: ['done', 'cancelled'] },
     isArchived: false
   };
   
-  if (workspaceId) {
-    query.workspace = workspaceId;
-  }
+  if (workspaceId) query.workspace = workspaceId;
+  if (userId) query.createdBy = userId;
   
   return this.find(query)
-    .populate('assignedTo createdBy workspace', 'firstName lastName email name');
+    .populate('workspace', 'name type color')
+    .sort({ dueDate: 1 });
 };
 
 // Find tasks by user
 taskSchema.statics.findByUser = function(userId, workspaceId = null) {
   const query = {
-    $or: [
-      { createdBy: userId },
-      { assignedTo: userId }
-    ],
+    createdBy: userId,
     isArchived: false
   };
   
@@ -787,6 +1092,20 @@ taskSchema.statics.findByUser = function(userId, workspaceId = null) {
   return this.find(query)
     .populate('workspace', 'name type color')
     .sort({ lastActivityAt: -1 });
+};
+
+// Get meeting preparation data
+taskSchema.statics.getMeetingPreparationData = function(workspaceId, userId, lastMeetingDate = null) {
+  const query = {
+    workspace: workspaceId,
+    createdBy: userId,
+    isKeyTask: true,
+    isArchived: false
+  };
+  
+  return this.find(query)
+    .populate('workspace', 'name type')
+    .sort({ 'managerNotes.lastDiscussedAt': -1 });
 };
 
 // Create the model
