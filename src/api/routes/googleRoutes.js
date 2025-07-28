@@ -6,10 +6,7 @@ const authMiddleware = require('../middlewares/authMiddleware');
 
 const router = express.Router();
 
-// --- Protected Google Integration Routes ---
-
 // Apply the 'protect' middleware to all routes in this file.
-// A user must be logged in to connect their Google account.
 router.use(authMiddleware.protect);
 
 /**
@@ -25,5 +22,19 @@ router.get('/auth', googleController.getAuthUrl);
  * @access  Private
  */
 router.get('/callback', googleController.handleCallback);
+
+/**
+ * @route   GET /api/v1/integrations/google/status
+ * @desc    Get the current Google Calendar integration status
+ * @access  Private
+ */
+router.get('/status', googleController.getIntegrationStatus);
+
+/**
+ * @route   DELETE /api/v1/integrations/google/disconnect
+ * @desc    Disconnect Google Calendar integration
+ * @access  Private
+ */
+router.delete('/disconnect', googleController.disconnectGoogle);
 
 module.exports = router;
