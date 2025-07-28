@@ -1,8 +1,8 @@
 /**
- * File Attachment Model
+ * File Attachment Model - AWS S3 Integration
  * 
- * MongoDB schema for file attachments with comprehensive features:
- * - Cloud storage integration (Cloudinary)
+ * MongoDB schema for file attachments with AWS S3 storage:
+ * - AWS S3 integration with secure file handling
  * - File metadata and security
  * - Access control and permissions
  * - File versioning and history
@@ -38,17 +38,17 @@ const fileVersionSchema = new Schema({
     min: 0
   },
   
-  url: {
+  s3Key: {
     type: String,
     required: true
   },
   
-  publicId: {
+  s3Bucket: {
     type: String,
     required: true
   },
   
-  checksum: {
+  s3ETag: {
     type: String,
     required: true
   },
@@ -162,34 +162,44 @@ const fileAttachmentSchema = new Schema({
     index: true
   },
   
-  // Cloud Storage Information
-  url: {
+  // AWS S3 Storage Information
+  s3Key: {
     type: String,
-    required: [true, 'File URL is required']
-  },
-  
-  secureUrl: {
-    type: String,
-    required: [true, 'Secure URL is required']
-  },
-  
-  publicId: {
-    type: String,
-    required: [true, 'Public ID is required'],
+    required: [true, 'S3 key is required'],
     unique: true,
     index: true
   },
   
-  resourceType: {
+  s3Bucket: {
     type: String,
-    enum: ['image', 'video', 'raw', 'auto'],
-    default: 'auto'
+    required: [true, 'S3 bucket is required'],
+    default: process.env.S3_BUCKET_NAME || 'mytasktracking'
   },
   
-  cloudProvider: {
+  s3Region: {
     type: String,
-    enum: ['cloudinary', 's3', 'local'],
-    default: 'cloudinary'
+    required: [true, 'S3 region is required'],
+    default: process.env.AWS_REGION || 'ap-southeast-2'
+  },
+  
+  s3ETag: {
+    type: String,
+    required: [true, 'S3 ETag is required']
+  },
+  
+  s3VersionId: {
+    type: String,
+    default: null // For S3 versioned buckets
+  },
+  
+  presignedUrl: {
+    url: String,
+    expiresAt: Date
+  },
+  
+  isPublic: {
+    type: Boolean,
+    default: false
   },
   
   // Image-specific Properties (if applicable)
@@ -255,20 +265,25 @@ const fileAttachmentSchema = new Schema({
   },
   
   // Security and Validation
-  isSecure: {
+  isEncrypted: {
     type: Boolean,
-    default: true
+    default: false
   },
   
-  encryptionKey: {
+  encryptionAlgorithm: {
     type: String,
-    default: null,
-    select: false // Never include in queries
+    enum: ['AES256', 'aws:kms'],
+    default: 'AES256'
+  },
+  
+  kmsKeyId: {
+    type: String,
+    default: null // For KMS encryption
   },
   
   virusScanStatus: {
     type: String,
-    enum: ['pending', 'clean', 'infected', 'error'],
+    enum: ['pending', 'clean', 'infected', 'error', 'skip'],
     default: 'pending',
     index: true
   },
@@ -376,6 +391,13 @@ const fileAttachmentSchema = new Schema({
     default: null
   },
   
+  // S3 Lifecycle Configuration
+  lifecyclePolicy: {
+    transitionToIA: { type: Number, min: 30, default: null }, // Days to transition to Infrequent Access
+    transitionToGlacier: { type: Number, min: 90, default: null }, // Days to transition to Glacier
+    deleteAfter: { type: Number, min: 1, default: null } // Days to delete
+  },
+  
   // Status and Metadata
   status: {
     type: String,
@@ -417,7 +439,7 @@ const fileAttachmentSchema = new Schema({
   toJSON: { 
     virtuals: true,
     transform: function(doc, ret) {
-      delete ret.encryptionKey;
+      delete ret.kmsKeyId;
       return ret;
     }
   },
@@ -466,6 +488,22 @@ fileAttachmentSchema.virtual('daysUntilExpiration').get(function() {
   return Math.ceil(diff / (1000 * 60 * 60 * 24));
 });
 
+// S3 Object URL
+fileAttachmentSchema.virtual('s3Url').get(function() {
+  if (this.isPublic) {
+    return `https://${this.s3Bucket}.s3.${this.s3Region}.amazonaws.com/${this.s3Key}`;
+  }
+  return null; // Private files need presigned URLs
+});
+
+// Is presigned URL valid
+fileAttachmentSchema.virtual('hasValidPresignedUrl').get(function() {
+  return this.presignedUrl && 
+         this.presignedUrl.url && 
+         this.presignedUrl.expiresAt && 
+         new Date() < this.presignedUrl.expiresAt;
+});
+
 /**
  * Indexes for Performance
  */
@@ -474,7 +512,8 @@ fileAttachmentSchema.index({ task: 1, status: 1 });
 fileAttachmentSchema.index({ uploadedBy: 1, createdAt: -1 });
 fileAttachmentSchema.index({ mimeType: 1, status: 1 });
 fileAttachmentSchema.index({ checksum: 1 });
-fileAttachmentSchema.index({ publicId: 1 });
+fileAttachmentSchema.index({ s3Key: 1 });
+fileAttachmentSchema.index({ s3Bucket: 1, s3Key: 1 });
 fileAttachmentSchema.index({ expiresAt: 1 });
 fileAttachmentSchema.index({ virusScanStatus: 1 });
 
@@ -585,6 +624,19 @@ fileAttachmentSchema.methods.logAccess = function(userId, action, ipAddress, use
   return this.save({ validateBeforeSave: false });
 };
 
+// Set presigned URL
+fileAttachmentSchema.methods.setPresignedUrl = function(url, expiresInMinutes = 60) {
+  const expiresAt = new Date();
+  expiresAt.setMinutes(expiresAt.getMinutes() + expiresInMinutes);
+  
+  this.presignedUrl = {
+    url,
+    expiresAt
+  };
+  
+  return this.save({ validateBeforeSave: false });
+};
+
 // Create new version
 fileAttachmentSchema.methods.createVersion = function(versionData, changeNotes = '') {
   // Mark current versions as not latest
@@ -597,9 +649,9 @@ fileAttachmentSchema.methods.createVersion = function(versionData, changeNotes =
     version: this.version + 1,
     filename: versionData.filename,
     size: versionData.size,
-    url: versionData.url,
-    publicId: versionData.publicId,
-    checksum: versionData.checksum,
+    s3Key: versionData.s3Key,
+    s3Bucket: versionData.s3Bucket,
+    s3ETag: versionData.s3ETag,
     uploadedBy: versionData.uploadedBy,
     changeNotes
   };
@@ -610,9 +662,9 @@ fileAttachmentSchema.methods.createVersion = function(versionData, changeNotes =
   this.version += 1;
   this.filename = versionData.filename;
   this.size = versionData.size;
-  this.url = versionData.url;
-  this.publicId = versionData.publicId;
-  this.checksum = versionData.checksum;
+  this.s3Key = versionData.s3Key;
+  this.s3Bucket = versionData.s3Bucket;
+  this.s3ETag = versionData.s3ETag;
   
   return this.save();
 };
