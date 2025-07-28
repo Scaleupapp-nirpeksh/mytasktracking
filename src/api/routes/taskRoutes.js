@@ -11,6 +11,13 @@ const router = express.Router({ mergeParams: true });
 // Apply the 'protect' middleware to all routes in this file.
 router.use(authMiddleware.protect);
 
+/**
+ * @route   POST /api/v1/tasks/parse
+ * @desc    Parse a natural language string to get task details
+ * @access  Private
+ */
+router.route('/parse').post(taskController.parseTask);
+
 // --- Main Task Routes ---
 
 /**

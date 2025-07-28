@@ -8,7 +8,7 @@ const bcrypt = require('bcryptjs');
  *
  * This schema defines the structure for user documents in the MongoDB database.
  * It includes fields for name, email, and password, with appropriate validation
- * and security measures.
+ * and security measures. It also includes fields for Google Calendar integration.
  */
 const userSchema = new mongoose.Schema({
   name: {
@@ -38,6 +38,24 @@ const userSchema = new mongoose.Schema({
   createdAt: {
     type: Date,
     default: Date.now,
+  },
+
+  // --- Google Calendar Integration Fields ---
+  googleId: {
+    type: String,
+    select: false,
+  },
+  googleAccessToken: {
+    type: String,
+    select: false,
+  },
+  googleRefreshToken: {
+    type: String,
+    select: false,
+  },
+  googleTokenExpiryDate: {
+    type: Date,
+    select: false,
   },
 });
 

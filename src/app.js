@@ -15,7 +15,8 @@ const workspaceRoutes = require('./api/routes/workspaceRoutes');
 const taskRoutes = require('./api/routes/taskRoutes');
 const meetingRoutes = require('./api/routes/meetingRoutes');
 const analyticsRoutes = require('./api/routes/analyticsRoutes');
-const searchRoutes = require('./api/routes/searchRoutes'); // <-- IMPORT NEW ROUTES
+const searchRoutes = require('./api/routes/searchRoutes');
+const googleRoutes = require('./api/routes/googleRoutes'); // <-- IMPORT NEW ROUTES
 
 // --- App Initialization ---
 const app = express();
@@ -66,7 +67,9 @@ app.use('/api/v1/meetings', meetingRoutes);
 // Mount the analytics routes
 app.use('/api/v1/analytics', analyticsRoutes);
 // Mount the search routes
-app.use('/api/v1/search', searchRoutes); // <-- MOUNT NEW ROUTES
+app.use('/api/v1/search', searchRoutes);
+// Mount the Google integration routes
+app.use('/api/v1/integrations/google', googleRoutes); // <-- MOUNT NEW ROUTES
 
 
 // --- Unhandled Routes Handler ---

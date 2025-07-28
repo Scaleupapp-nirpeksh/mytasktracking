@@ -9,7 +9,9 @@ const http = require('http');
 const app = require('./app'); // The configured Express app
 const connectDB = require('./config/db');
 const logger = require('./utils/logger');
-const initializeTaskNotifier = require('./jobs/taskNotifierJob'); // <-- IMPORT CRON JOB INITIALIZER
+const initializeTaskNotifier = require('./jobs/taskNotifierJob');
+const initializeCalendarSync = require('./jobs/calendarSyncJob');
+const initializeRecurringTaskJob = require('./jobs/recurringTaskJob'); // <-- IMPORT NEW RECURRING JOB
 
 // 3. Handle Uncaught Exceptions
 process.on('uncaughtException', (err) => {
@@ -33,8 +35,10 @@ const startServer = async () => {
     server.listen(PORT, () => {
       logger.info(`Server is running on port ${PORT} in ${process.env.NODE_ENV} mode.`);
       
-      // Initialize and start the cron job after the server is running
-      initializeTaskNotifier(); // <-- START THE CRON JOB
+      // Initialize and start all cron jobs after the server is running
+      initializeTaskNotifier();
+      initializeCalendarSync();
+      initializeRecurringTaskJob(); // <-- START THE RECURRING TASK JOB
     });
   } catch (error) {
     logger.error('Failed to start server:', error);
