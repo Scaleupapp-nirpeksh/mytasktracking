@@ -1,18 +1,20 @@
 /**
- * Task Controller
+ * Enhanced Task Controller with Manager Meeting Features
  * 
  * HTTP request handlers for task management operations:
  * - CRUD operations for tasks
- * - Subtask and comment management
+ * - Subtask and personal notes management
  * - File attachment handling
- * - Manager meeting features
+ * - Manager meeting features and preparation
  * - Time tracking and analytics
+ * - Meeting history and discussion tracking
  * 
  * @author Nirpeksh Scale Up App
- * @version 1.0.0
+ * @version 2.0.0 - Enhanced for Manager Meetings
  */
 
 const Task = require('../../models/task/Task');
+const ManagerMeeting = require('../../models/task/ManagerMeeting');
 const Workspace = require('../../models/workspace/Workspace');
 const { catchAsync } = require('../../middleware/error');
 const { NotFoundError, ValidationError, AuthorizationError } = require('../../middleware/error');
@@ -24,6 +26,7 @@ const { logBusiness, logger } = require('../../utils/logger/logger');
 const buildTaskFilters = (query, workspaceId, userId = null) => {
   const filters = { 
     workspace: workspaceId,
+    createdBy: userId, // Single user - always filter by current user
     isArchived: false 
   };
 
@@ -43,11 +46,6 @@ const buildTaskFilters = (query, workspaceId, userId = null) => {
     } else {
       filters.priority = query.priority;
     }
-  }
-
-  // Assigned user filter
-  if (query.assignedTo) {
-    filters.assignedTo = query.assignedTo;
   }
 
   // Category filter
@@ -85,14 +83,6 @@ const buildTaskFilters = (query, workspaceId, userId = null) => {
     if (query.createdTo) {
       filters.createdAt.$lte = new Date(query.createdTo);
     }
-  }
-
-  // User-specific filter (my tasks)
-  if (query.myTasks === 'true' && userId) {
-    filters.$or = [
-      { createdBy: userId },
-      { assignedTo: userId }
-    ];
   }
 
   return filters;
@@ -136,7 +126,7 @@ const getTasks = catchAsync(async (req, res) => {
 
   // Execute query with population
   const tasks = await Task.find(filters)
-    .populate('createdBy assignedTo', 'firstName lastName email avatar')
+    .populate('createdBy', 'firstName lastName email avatar')
     .populate('workspace', 'name type color')
     .sort(sort)
     .skip(skip)
@@ -169,7 +159,8 @@ const getTasks = catchAsync(async (req, res) => {
             ] 
           } 
         },
-        urgentTasks: { $sum: { $cond: [{ $eq: ['$priority', 'urgent'] }, 1, 0] } }
+        urgentTasks: { $sum: { $cond: [{ $eq: ['$priority', 'urgent'] }, 1, 0] } },
+        keyTasks: { $sum: { $cond: ['$isKeyTask', 1, 0] } }
       }
     }
   ]);
@@ -196,7 +187,8 @@ const getTasks = catchAsync(async (req, res) => {
       totalTasks: 0,
       completedTasks: 0,
       overdueTasks: 0,
-      urgentTasks: 0
+      urgentTasks: 0,
+      keyTasks: 0
     },
     data: {
       tasks
@@ -205,7 +197,7 @@ const getTasks = catchAsync(async (req, res) => {
 });
 
 /**
- * @desc    Get key tasks for manager meetings
+ * @desc    Get key tasks for manager meetings (FIXED)
  * @route   GET /api/tasks/key-tasks
  * @access  Private
  */
@@ -213,7 +205,8 @@ const getKeyTasks = catchAsync(async (req, res) => {
   const workspaceId = req.workspace.id;
   const userId = req.user.id;
 
-  const keyTasks = await Task.findKeyTasks(workspaceId, userId);
+  // FIXED: Use the correct static method
+  const keyTasks = await Task.findKeyTasksWithHistory(workspaceId, userId);
 
   // Group tasks by status for better presentation
   const groupedTasks = keyTasks.reduce((acc, task) => {
@@ -245,7 +238,108 @@ const getKeyTasks = catchAsync(async (req, res) => {
 });
 
 /**
- * @desc    Get single task by ID
+ * @desc    Get tasks ready for manager discussion
+ * @route   GET /api/tasks/ready-for-discussion
+ * @access  Private
+ */
+const getTasksReadyForDiscussion = catchAsync(async (req, res) => {
+  const workspaceId = req.workspace.id;
+  const userId = req.user.id;
+  const { daysSince = 7 } = req.query;
+
+  const tasksReady = await Task.findTasksReadyForDiscussion(
+    workspaceId, 
+    userId, 
+    parseInt(daysSince)
+  );
+
+  // Separate by urgency
+  const urgentTasks = tasksReady.filter(task => 
+    task.priority === 'urgent' || 
+    task.hasUnresolvedBlockers || 
+    task.isOverdue
+  );
+
+  const regularTasks = tasksReady.filter(task => !urgentTasks.includes(task));
+
+  logBusiness('tasks_ready_for_discussion', userId, workspaceId, {
+    totalReady: tasksReady.length,
+    urgentCount: urgentTasks.length,
+    daysSince
+  });
+
+  res.status(200).json({
+    status: 'success',
+    results: tasksReady.length,
+    data: {
+      urgentTasks,
+      regularTasks,
+      summary: {
+        total: tasksReady.length,
+        urgent: urgentTasks.length,
+        regular: regularTasks.length,
+        daysSinceLastDiscussion: parseInt(daysSince)
+      }
+    }
+  });
+});
+
+/**
+ * @desc    Get meeting preparation data
+ * @route   GET /api/tasks/meeting-preparation
+ * @access  Private
+ */
+const getMeetingPreparationData = catchAsync(async (req, res) => {
+  const workspaceId = req.workspace.id;
+  const userId = req.user.id;
+
+  // Get key tasks with meeting history
+  const keyTasks = await Task.findKeyTasksWithHistory(workspaceId, userId);
+  
+  // Get tasks ready for discussion
+  const tasksReady = await Task.findTasksReadyForDiscussion(workspaceId, userId, 7);
+  
+  // Get last meeting info
+  const lastMeeting = await ManagerMeeting.findLatestMeeting(userId, workspaceId);
+  
+  // Get pending action items across all tasks
+  const tasksWithPendingActions = await Task.find({
+    workspace: workspaceId,
+    createdBy: userId,
+    'managerNotes.currentActionItems.isCompleted': false,
+    isArchived: false
+  }).select('title managerNotes.currentActionItems priority status');
+
+  // Combine preparation data
+  const preparationData = {
+    keyTasks: keyTasks.slice(0, 10), // Top 10 key tasks
+    tasksReadyForDiscussion: tasksReady.slice(0, 15), // Top 15 ready tasks
+    tasksWithBlockers: keyTasks.filter(task => task.hasUnresolvedBlockers),
+    overdueTasks: keyTasks.filter(task => task.isOverdue),
+    tasksWithPendingActions,
+    lastMeeting: lastMeeting ? {
+      id: lastMeeting._id,
+      date: lastMeeting.meetingDate,
+      tasksDiscussed: lastMeeting.tasksDiscussed.length,
+      actionItems: lastMeeting.actionItems.length,
+      rating: lastMeeting.meetingRating
+    } : null
+  };
+
+  logBusiness('meeting_preparation_data_retrieved', userId, workspaceId, {
+    keyTasksCount: preparationData.keyTasks.length,
+    readyTasksCount: preparationData.tasksReadyForDiscussion.length,
+    blockersCount: preparationData.tasksWithBlockers.length
+  });
+
+  res.status(200).json({
+    status: 'success',
+    data: preparationData
+  });
+});
+
+/**
+ * @desc    Get single task by ID with meeting context
  * @route   GET /api/tasks/:id
  * @access  Private
  */
@@ -254,23 +348,29 @@ const getTask = catchAsync(async (req, res) => {
 
   // Populate all necessary fields
   await task.populate([
-    { path: 'createdBy assignedTo', select: 'firstName lastName email avatar' },
+    { path: 'createdBy', select: 'firstName lastName email avatar' },
     { path: 'workspace', select: 'name type color' },
-    { path: 'parentTask', select: 'title status priority' },
-    { path: 'comments.author', select: 'firstName lastName avatar' },
-    { path: 'timeLogs.user', select: 'firstName lastName' },
-    { path: 'attachments.uploadedBy', select: 'firstName lastName' }
+    { path: 'parentTask', select: 'title status priority' }
   ]);
 
   // Get subtasks (child tasks)
   const subtasks = await Task.find({ parentTask: task.id })
-    .populate('createdBy assignedTo', 'firstName lastName email avatar')
+    .populate('createdBy', 'firstName lastName email avatar')
     .sort({ createdAt: 1 });
 
   // Get dependencies
   const dependencies = await Task.find({ 
     _id: { $in: task.dependencies.map(dep => dep.task) }
   }).select('title status priority dueDate');
+
+  // Get meeting history for this task
+  const meetingHistory = await ManagerMeeting.find({
+    'tasksDiscussed.task': task.id,
+    user: req.user.id,
+    isArchived: false
+  }).select('meetingDate tasksDiscussed actionItems meetingRating')
+    .sort({ meetingDate: -1 })
+    .limit(5);
 
   logBusiness('task_viewed', req.user.id, req.workspace.id, {
     taskId: task.id,
@@ -284,12 +384,16 @@ const getTask = catchAsync(async (req, res) => {
       task,
       subtasks,
       dependencies,
+      meetingHistory,
       analytics: {
         totalTimeSpent: task.totalTimeSpent,
         hasActiveTimer: task.hasActiveTimer,
         isOverdue: task.isOverdue,
         daysUntilDue: task.daysUntilDue,
-        subtaskProgress: task.subtaskProgress
+        subtaskProgress: task.subtaskProgress,
+        meetingDiscussionFrequency: task.meetingDiscussionFrequency,
+        hasUnresolvedBlockers: task.hasUnresolvedBlockers,
+        pendingActionItemsCount: task.pendingActionItemsCount
       }
     }
   });
@@ -317,20 +421,13 @@ const createTask = catchAsync(async (req, res) => {
     });
   }
 
-  // Create task data
+  // Create task data (single user - no assignment needed)
   const taskData = {
     ...req.body,
     workspace: workspaceId,
     createdBy: userId,
     taskNumber
   };
-
-  // Set assignedTo to creator if not specified
-  if (!taskData.assignedTo) {
-    taskData.assignedTo = userId;
-    taskData.assignedAt = new Date();
-    taskData.assignedBy = userId;
-  }
 
   const task = new Task(taskData);
   await task.save();
@@ -342,7 +439,7 @@ const createTask = catchAsync(async (req, res) => {
 
   // Populate created task
   await task.populate([
-    { path: 'createdBy assignedTo', select: 'firstName lastName email avatar' },
+    { path: 'createdBy', select: 'firstName lastName email avatar' },
     { path: 'workspace', select: 'name type color' }
   ]);
 
@@ -380,18 +477,10 @@ const updateTask = catchAsync(async (req, res) => {
   if (updates.status && updates.status !== task.status) {
     if (updates.status === 'done' && !task.completedAt) {
       updates.completedAt = new Date();
-      updates.completedBy = userId;
       updates.progress = 100;
     } else if (updates.status !== 'done' && task.completedAt) {
       updates.completedAt = null;
-      updates.completedBy = null;
     }
-  }
-
-  // Handle assignment changes
-  if (updates.assignedTo && updates.assignedTo !== task.assignedTo?.toString()) {
-    updates.assignedAt = new Date();
-    updates.assignedBy = userId;
   }
 
   // Apply updates
@@ -413,7 +502,7 @@ const updateTask = catchAsync(async (req, res) => {
 
   // Populate updated task
   await task.populate([
-    { path: 'createdBy assignedTo', select: 'firstName lastName email avatar' },
+    { path: 'createdBy', select: 'firstName lastName email avatar' },
     { path: 'workspace', select: 'name type color' }
   ]);
 
@@ -443,7 +532,7 @@ const deleteTask = catchAsync(async (req, res) => {
   const userId = req.user.id;
 
   // Archive task instead of hard delete
-  await task.archive(userId);
+  await task.archive();
 
   // Update workspace stats
   await req.workspace.updateStats({
@@ -469,10 +558,10 @@ const deleteTask = catchAsync(async (req, res) => {
  */
 const addSubtask = catchAsync(async (req, res) => {
   const task = req.task; // Set by middleware
-  const { title, order } = req.body;
+  const { title, order, notes } = req.body;
   const userId = req.user.id;
 
-  await task.addSubtask(title, order);
+  await task.addSubtask(title, order, notes);
 
   logBusiness('subtask_added', userId, req.workspace.id, {
     taskId: task.id,
@@ -504,12 +593,12 @@ const toggleSubtask = catchAsync(async (req, res) => {
     throw new NotFoundError('Subtask not found');
   }
 
-  await task.toggleSubtask(subtaskId, userId);
+  await task.toggleSubtask(subtaskId);
 
   logBusiness('subtask_toggled', userId, req.workspace.id, {
     taskId: task.id,
     subtaskId,
-    isCompleted: subtask.isCompleted
+    isCompleted: task.subtasks.id(subtaskId).isCompleted
   });
 
   res.status(200).json({
@@ -523,58 +612,279 @@ const toggleSubtask = catchAsync(async (req, res) => {
 });
 
 /**
- * @desc    Add comment to task
- * @route   POST /api/tasks/:id/comments
+ * @desc    Add personal note to task (Single User)
+ * @route   POST /api/tasks/:id/notes
  * @access  Private
  */
-const addComment = catchAsync(async (req, res) => {
+const addPersonalNote = catchAsync(async (req, res) => {
   const task = req.task;
-  const { content } = req.body;
+  const { content, noteType = 'general', isImportant = false } = req.body;
   const userId = req.user.id;
 
-  await task.addComment(content, userId);
+  await task.addPersonalNote(content, noteType, isImportant);
   
-  // Populate the new comment
-  const newComment = task.comments[task.comments.length - 1];
-  await task.populate('comments.author', 'firstName lastName avatar');
+  // Get the new note
+  const newNote = task.personalNotes[task.personalNotes.length - 1];
 
-  logBusiness('task_comment_added', userId, req.workspace.id, {
+  logBusiness('personal_note_added', userId, req.workspace.id, {
     taskId: task.id,
-    commentLength: content.length
+    noteType,
+    isImportant,
+    contentLength: content.length
   });
 
   res.status(201).json({
     status: 'success',
-    message: 'Comment added successfully',
+    message: 'Personal note added successfully',
     data: {
-      comment: newComment
+      note: newNote
     }
   });
 });
 
 /**
- * @desc    Add manager feedback to task
- * @route   POST /api/tasks/:id/manager-feedback
+ * @desc    Update personal note
+ * @route   PATCH /api/tasks/:id/notes/:noteId
  * @access  Private
  */
-const addManagerFeedback = catchAsync(async (req, res) => {
+const updatePersonalNote = catchAsync(async (req, res) => {
   const task = req.task;
-  const { priorityFeedback, actionItems = [], blockers = [] } = req.body;
+  const { noteId } = req.params;
+  const { content, noteType, isImportant } = req.body;
   const userId = req.user.id;
 
-  await task.addManagerFeedback(priorityFeedback, actionItems, blockers);
+  const note = task.personalNotes.id(noteId);
+  if (!note) {
+    throw new NotFoundError('Personal note not found');
+  }
 
-  logBusiness('manager_feedback_added', userId, req.workspace.id, {
+  // Update note fields
+  if (content !== undefined) note.content = content;
+  if (noteType !== undefined) note.noteType = noteType;
+  if (isImportant !== undefined) note.isImportant = isImportant;
+  
+  note.isEdited = true;
+  note.editedAt = new Date();
+
+  await task.save();
+
+  logBusiness('personal_note_updated', userId, req.workspace.id, {
     taskId: task.id,
-    actionItemsCount: actionItems.length,
-    blockersCount: blockers.length
+    noteId,
+    noteType: note.noteType
   });
 
   res.status(200).json({
     status: 'success',
-    message: 'Manager feedback added successfully',
+    message: 'Personal note updated successfully',
     data: {
-      managerNotes: task.managerNotes
+      note
+    }
+  });
+});
+
+/**
+ * @desc    Delete personal note
+ * @route   DELETE /api/tasks/:id/notes/:noteId
+ * @access  Private
+ */
+const deletePersonalNote = catchAsync(async (req, res) => {
+  const task = req.task;
+  const { noteId } = req.params;
+  const userId = req.user.id;
+
+  const note = task.personalNotes.id(noteId);
+  if (!note) {
+    throw new NotFoundError('Personal note not found');
+  }
+
+  task.personalNotes.pull(noteId);
+  await task.save();
+
+  logBusiness('personal_note_deleted', userId, req.workspace.id, {
+    taskId: task.id,
+    noteId
+  });
+
+  res.status(200).json({
+    status: 'success',
+    message: 'Personal note deleted successfully'
+  });
+});
+
+/**
+ * @desc    Add meeting preparation notes
+ * @route   PATCH /api/tasks/:id/meeting-prep
+ * @access  Private
+ */
+const addMeetingPreparationNotes = catchAsync(async (req, res) => {
+  const task = req.task;
+  const { preparationNotes } = req.body;
+  const userId = req.user.id;
+
+  if (!preparationNotes || preparationNotes.trim().length === 0) {
+    throw new ValidationError('Preparation notes are required');
+  }
+
+  await task.prepareMeetingNotes(preparationNotes);
+
+  logBusiness('meeting_prep_notes_added', userId, req.workspace.id, {
+    taskId: task.id,
+    notesLength: preparationNotes.length
+  });
+
+  res.status(200).json({
+    status: 'success',
+    message: 'Meeting preparation notes added successfully',
+    data: {
+      preparationNotes: task.managerNotes.preparationNotes,
+      lastPreparationDate: task.managerNotes.lastPreparationDate
+    }
+  });
+});
+
+/**
+ * @desc    Add blocker to task
+ * @route   POST /api/tasks/:id/blockers
+ * @access  Private
+ */
+const addTaskBlocker = catchAsync(async (req, res) => {
+  const task = req.task;
+  const { description, severity = 'medium' } = req.body;
+  const userId = req.user.id;
+
+  if (!description || description.trim().length === 0) {
+    throw new ValidationError('Blocker description is required');
+  }
+
+  await task.addBlocker(description, severity);
+
+  const newBlocker = task.managerNotes.currentBlockers[task.managerNotes.currentBlockers.length - 1];
+
+  logBusiness('task_blocker_added', userId, req.workspace.id, {
+    taskId: task.id,
+    blockerId: newBlocker._id,
+    severity
+  });
+
+  res.status(201).json({
+    status: 'success',
+    message: 'Blocker added successfully',
+    data: {
+      blocker: newBlocker,
+      hasUnresolvedBlockers: task.hasUnresolvedBlockers
+    }
+  });
+});
+
+/**
+ * @desc    Resolve task blocker
+ * @route   PATCH /api/tasks/:id/blockers/:blockerId
+ * @access  Private
+ */
+const resolveTaskBlocker = catchAsync(async (req, res) => {
+  const task = req.task;
+  const { blockerId } = req.params;
+  const userId = req.user.id;
+
+  await task.resolveBlocker(blockerId);
+
+  const resolvedBlocker = task.managerNotes.currentBlockers.id(blockerId);
+
+  logBusiness('task_blocker_resolved', userId, req.workspace.id, {
+    taskId: task.id,
+    blockerId
+  });
+
+  res.status(200).json({
+    status: 'success',
+    message: 'Blocker resolved successfully',
+    data: {
+      blocker: resolvedBlocker,
+      hasUnresolvedBlockers: task.hasUnresolvedBlockers
+    }
+  });
+});
+
+/**
+ * @desc    Add task meeting history entry
+ * @route   POST /api/tasks/:id/meeting-history
+ * @access  Private
+ */
+const addTaskMeetingHistory = catchAsync(async (req, res) => {
+  const task = req.task;
+  const { meetingId, meetingData } = req.body;
+  const userId = req.user.id;
+
+  if (!meetingId) {
+    throw new ValidationError('Meeting ID is required');
+  }
+
+  // Verify meeting exists and belongs to user
+  const meeting = await ManagerMeeting.findOne({
+    _id: meetingId,
+    user: userId,
+    workspace: req.workspace.id
+  });
+
+  if (!meeting) {
+    throw new NotFoundError('Meeting not found or access denied');
+  }
+
+  await task.addMeetingHistory(meetingId, meetingData);
+
+  logBusiness('task_meeting_history_added', userId, req.workspace.id, {
+    taskId: task.id,
+    meetingId,
+    discussedAt: meetingData.discussedAt
+  });
+
+  res.status(201).json({
+    status: 'success',
+    message: 'Meeting history added successfully',
+    data: {
+      meetingHistory: task.managerNotes.meetingHistory,
+      lastDiscussedAt: task.managerNotes.lastDiscussedAt,
+      totalMeetingsDiscussed: task.managerNotes.totalMeetingsDiscussed
+    }
+  });
+});
+
+/**
+ * @desc    Get task meeting history
+ * @route   GET /api/tasks/:id/meeting-history
+ * @access  Private
+ */
+const getTaskMeetingHistory = catchAsync(async (req, res) => {
+  const task = req.task;
+  const userId = req.user.id;
+
+  // Get detailed meeting history
+  const meetings = await ManagerMeeting.find({
+    'tasksDiscussed.task': task.id,
+    user: userId,
+    isArchived: false
+  }).populate('workspace', 'name type')
+    .sort({ meetingDate: -1 });
+
+  // Get task's internal meeting history
+  const taskMeetingHistory = task.managerNotes.meetingHistory;
+
+  logBusiness('task_meeting_history_retrieved', userId, req.workspace.id, {
+    taskId: task.id,
+    meetingsCount: meetings.length
+  });
+
+  res.status(200).json({
+    status: 'success',
+    data: {
+      meetings,
+      taskMeetingHistory,
+      summary: {
+        totalMeetingsDiscussed: task.managerNotes.totalMeetingsDiscussed,
+        lastDiscussedAt: task.managerNotes.lastDiscussedAt,
+        meetingFrequency: task.meetingDiscussionFrequency
+      }
     }
   });
 });
@@ -616,13 +926,14 @@ const toggleKeyTask = catchAsync(async (req, res) => {
  */
 const startTimer = catchAsync(async (req, res) => {
   const task = req.task;
-  const { description = '' } = req.body;
+  const { description = '', sessionType = 'focused_work' } = req.body;
   const userId = req.user.id;
 
-  await task.startTimer(userId, description);
+  await task.startTimer(description, sessionType);
 
   logBusiness('timer_started', userId, req.workspace.id, {
-    taskId: task.id
+    taskId: task.id,
+    sessionType
   });
 
   res.status(200).json({
@@ -644,7 +955,7 @@ const stopTimer = catchAsync(async (req, res) => {
   const task = req.task;
   const userId = req.user.id;
 
-  await task.stopTimer(userId);
+  await task.stopTimer();
 
   logBusiness('timer_stopped', userId, req.workspace.id, {
     taskId: task.id,
@@ -680,6 +991,7 @@ const getTaskAnalytics = catchAsync(async (req, res) => {
     {
       $match: {
         workspace: workspaceId,
+        createdBy: userId,
         completedAt: { $gte: startDate },
         isArchived: false
       }
@@ -698,6 +1010,7 @@ const getTaskAnalytics = catchAsync(async (req, res) => {
     {
       $match: {
         workspace: workspaceId,
+        createdBy: userId,
         isArchived: false,
         status: { $ne: 'cancelled' }
       }
@@ -715,6 +1028,7 @@ const getTaskAnalytics = catchAsync(async (req, res) => {
     {
       $match: {
         workspace: workspaceId,
+        createdBy: userId,
         isArchived: false
       }
     },
@@ -726,6 +1040,34 @@ const getTaskAnalytics = catchAsync(async (req, res) => {
     }
   ]);
 
+  // Time tracking analytics
+  const timeAnalytics = await Task.aggregate([
+    {
+      $match: {
+        workspace: workspaceId,
+        createdBy: userId,
+        isArchived: false,
+        'timeLogs.0': { $exists: true }
+      }
+    },
+    {
+      $project: {
+        title: 1,
+        totalTimeSpent: { $sum: '$timeLogs.duration' },
+        estimatedDuration: 1,
+        actualDuration: 1
+      }
+    },
+    {
+      $group: {
+        _id: null,
+        totalTimeLogged: { $sum: '$totalTimeSpent' },
+        averageTimePerTask: { $avg: '$totalTimeSpent' },
+        tasksWithTimeTracking: { $sum: 1 }
+      }
+    }
+  ]);
+
   res.status(200).json({
     status: 'success',
     data: {
@@ -733,6 +1075,11 @@ const getTaskAnalytics = catchAsync(async (req, res) => {
         completionTrends,
         priorityDistribution,
         statusDistribution,
+        timeAnalytics: timeAnalytics[0] || {
+          totalTimeLogged: 0,
+          averageTimePerTask: 0,
+          tasksWithTimeTracking: 0
+        },
         timeRange: `${timeRange} days`
       }
     }
@@ -740,18 +1087,41 @@ const getTaskAnalytics = catchAsync(async (req, res) => {
 });
 
 module.exports = {
+  // Core CRUD operations
   getTasks,
-  getKeyTasks,
   getTask,
   createTask,
   updateTask,
   deleteTask,
+  
+  // Subtask management
   addSubtask,
   toggleSubtask,
-  addComment,
-  addManagerFeedback,
+  
+  // Personal notes (single user)
+  addPersonalNote,
+  updatePersonalNote,
+  deletePersonalNote,
+  
+  // Manager meeting features
+  getKeyTasks,
+  getTasksReadyForDiscussion,
+  getMeetingPreparationData,
+  addMeetingPreparationNotes,
   toggleKeyTask,
+  
+  // Blocker management
+  addTaskBlocker,
+  resolveTaskBlocker,
+  
+  // Meeting history
+  addTaskMeetingHistory,
+  getTaskMeetingHistory,
+  
+  // Time tracking
   startTimer,
   stopTimer,
+  
+  // Analytics
   getTaskAnalytics
 };

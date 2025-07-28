@@ -1,15 +1,17 @@
 /**
- * Task Routes
+ * Enhanced Task Routes with Manager Meeting Features
  * 
- * Express routes for task management operations:
+ * Express routes for comprehensive task management operations:
  * - Task CRUD operations with middleware integration
- * - Subtask and comment management
+ * - Subtask and personal notes management (single user)
+ * - Manager meeting preparation and tracking
+ * - Blocker management and resolution
+ * - Meeting history and discussion tracking
  * - Time tracking and analytics
- * - Manager meeting features
  * - File attachment handling
  * 
  * @author Nirpeksh Scale Up App
- * @version 1.0.0
+ * @version 2.0.0 - Enhanced for Manager Meetings
  */
 
 const express = require('express');
@@ -94,7 +96,161 @@ const interactionLimiter = rateLimit({
 });
 
 /**
- * Routes
+ * Validation Helpers for New Features
+ */
+
+// Personal note validation middleware
+const validatePersonalNote = (req, res, next) => {
+  const { content, noteType, isImportant } = req.body;
+  
+  if (!content || content.trim().length === 0) {
+    return res.status(400).json({
+      status: 'fail',
+      message: 'Note content is required'
+    });
+  }
+  
+  if (content.length > 2000) {
+    return res.status(400).json({
+      status: 'fail',
+      message: 'Note content cannot exceed 2000 characters'
+    });
+  }
+  
+  if (noteType && !['general', 'progress', 'blocker', 'idea', 'meeting_prep'].includes(noteType)) {
+    return res.status(400).json({
+      status: 'fail',
+      message: 'Invalid note type. Must be: general, progress, blocker, idea, or meeting_prep'
+    });
+  }
+  
+  if (isImportant !== undefined && typeof isImportant !== 'boolean') {
+    return res.status(400).json({
+      status: 'fail',
+      message: 'isImportant must be a boolean value'
+    });
+  }
+  
+  next();
+};
+
+// Personal note update validation middleware
+const validatePersonalNoteUpdate = (req, res, next) => {
+  const { content, noteType, isImportant } = req.body;
+  
+  if (content !== undefined) {
+    if (content.trim().length === 0) {
+      return res.status(400).json({
+        status: 'fail',
+        message: 'Note content cannot be empty'
+      });
+    }
+    
+    if (content.length > 2000) {
+      return res.status(400).json({
+        status: 'fail',
+        message: 'Note content cannot exceed 2000 characters'
+      });
+    }
+  }
+  
+  if (noteType && !['general', 'progress', 'blocker', 'idea', 'meeting_prep'].includes(noteType)) {
+    return res.status(400).json({
+      status: 'fail',
+      message: 'Invalid note type. Must be: general, progress, blocker, idea, or meeting_prep'
+    });
+  }
+  
+  if (isImportant !== undefined && typeof isImportant !== 'boolean') {
+    return res.status(400).json({
+      status: 'fail',
+      message: 'isImportant must be a boolean value'
+    });
+  }
+  
+  next();
+};
+
+// Blocker validation middleware
+const validateBlocker = (req, res, next) => {
+  const { description, severity } = req.body;
+  
+  if (!description || description.trim().length === 0) {
+    return res.status(400).json({
+      status: 'fail',
+      message: 'Blocker description is required'
+    });
+  }
+  
+  if (description.length > 300) {
+    return res.status(400).json({
+      status: 'fail',
+      message: 'Blocker description cannot exceed 300 characters'
+    });
+  }
+  
+  if (severity && !['low', 'medium', 'high', 'critical'].includes(severity)) {
+    return res.status(400).json({
+      status: 'fail',
+      message: 'Invalid severity level. Must be: low, medium, high, or critical'
+    });
+  }
+  
+  next();
+};
+
+// Meeting preparation validation middleware
+const validateMeetingPrep = (req, res, next) => {
+  const { preparationNotes } = req.body;
+  
+  if (!preparationNotes || preparationNotes.trim().length === 0) {
+    return res.status(400).json({
+      status: 'fail',
+      message: 'Preparation notes are required'
+    });
+  }
+  
+  if (preparationNotes.length > 2000) {
+    return res.status(400).json({
+      status: 'fail',
+      message: 'Preparation notes cannot exceed 2000 characters'
+    });
+  }
+  
+  next();
+};
+
+// Meeting history validation middleware
+const validateMeetingHistory = (req, res, next) => {
+  const { meetingId, meetingData } = req.body;
+  
+  if (!meetingId) {
+    return res.status(400).json({
+      status: 'fail',
+      message: 'Meeting ID is required'
+    });
+  }
+  
+  // Validate meetingId is a valid ObjectId
+  if (!meetingId.match(/^[0-9a-fA-F]{24}$/)) {
+    return res.status(400).json({
+      status: 'fail',
+      message: 'Invalid meeting ID format'
+    });
+  }
+  
+  if (!meetingData || typeof meetingData !== 'object') {
+    return res.status(400).json({
+      status: 'fail',
+      message: 'Meeting data object is required'
+    });
+  }
+  
+  next();
+};
+
+/**
+ * CORE TASK ROUTES
  */
 
 // @route   GET /api/tasks
@@ -125,6 +281,32 @@ router.get(
   taskController.getTaskAnalytics
 );
 
+/**
+ * MANAGER MEETING PREPARATION ROUTES
+ */
+
+// @route   GET /api/tasks/meeting-preparation
+// @desc    Get comprehensive meeting preparation data
+// @access  Private
+router.get(
+  '/meeting-preparation',
+  taskOperationsLimiter,
+  taskController.getMeetingPreparationData
+);
+
+// @route   GET /api/tasks/ready-for-discussion
+// @desc    Get tasks ready for manager discussion
+// @access  Private
+router.get(
+  '/ready-for-discussion',
+  taskOperationsLimiter,
+  taskController.getTasksReadyForDiscussion
+);
+
+/**
+ * TASK CRUD OPERATIONS
+ */
+
 // @route   POST /api/tasks
 // @desc    Create new task
 // @access  Private
@@ -139,7 +321,7 @@ router.post(
 );
 
 // @route   GET /api/tasks/:id
-// @desc    Get single task by ID
+// @desc    Get single task by ID with meeting context
 // @access  Private
 router.get(
   '/:id',
@@ -177,7 +359,7 @@ router.delete(
 );
 
 /**
- * Subtask Routes
+ * SUBTASK MANAGEMENT ROUTES
  */
 
 // @route   POST /api/tasks/:id/subtasks
@@ -206,11 +388,126 @@ router.patch(
 );
 
 /**
- * Comment Routes
+ * PERSONAL NOTES ROUTES (Single User Feature)
+ */
+
+// @route   POST /api/tasks/:id/notes
+// @desc    Add personal note to task
+// @access  Private
+router.post(
+  '/:id/notes',
+  interactionLimiter,
+  canViewTask,
+  enforceWorkspaceIsolation,
+  validatePersonalNote,
+  taskController.addPersonalNote
+);
+
+// @route   PATCH /api/tasks/:id/notes/:noteId
+// @desc    Update personal note
+// @access  Private
+router.patch(
+  '/:id/notes/:noteId',
+  interactionLimiter,
+  canViewTask,
+  canEditTask,
+  enforceWorkspaceIsolation,
+  validatePersonalNoteUpdate,
+  taskController.updatePersonalNote
+);
+
+// @route   DELETE /api/tasks/:id/notes/:noteId
+// @desc    Delete personal note
+// @access  Private
+router.delete(
+  '/:id/notes/:noteId',
+  interactionLimiter,
+  canViewTask,
+  canEditTask,
+  enforceWorkspaceIsolation,
+  taskController.deletePersonalNote
+);
+
+/**
+ * MEETING PREPARATION ROUTES
+ */
+
+// @route   PATCH /api/tasks/:id/meeting-prep
+// @desc    Add meeting preparation notes to task
+// @access  Private
+router.patch(
+  '/:id/meeting-prep',
+  interactionLimiter,
+  canViewTask,
+  canEditTask,
+  enforceWorkspaceIsolation,
+  validateMeetingPrep,
+  taskController.addMeetingPreparationNotes
+);
+
+/**
+ * BLOCKER MANAGEMENT ROUTES
+ */
+
+// @route   POST /api/tasks/:id/blockers
+// @desc    Add blocker to task
+// @access  Private
+router.post(
+  '/:id/blockers',
+  interactionLimiter,
+  canViewTask,
+  canEditTask,
+  enforceWorkspaceIsolation,
+  validateBlocker,
+  taskController.addTaskBlocker
+);
+
+// @route   PATCH /api/tasks/:id/blockers/:blockerId
+// @desc    Resolve task blocker
+// @access  Private
+router.patch(
+  '/:id/blockers/:blockerId',
+  interactionLimiter,
+  canViewTask,
+  canEditTask,
+  enforceWorkspaceIsolation,
+  taskController.resolveTaskBlocker
+);
+
+/**
+ * MEETING HISTORY ROUTES
+ */
+
+// @route   POST /api/tasks/:id/meeting-history
+// @desc    Add meeting history entry to task
+// @access  Private
+router.post(
+  '/:id/meeting-history',
+  interactionLimiter,
+  canViewTask,
+  canEditTask,
+  enforceWorkspaceIsolation,
+  validateMeetingHistory,
+  taskController.addTaskMeetingHistory
+);
+
+// @route   GET /api/tasks/:id/meeting-history
+// @desc    Get meeting history for task
+// @access  Private
+router.get(
+  '/:id/meeting-history',
+  taskOperationsLimiter,
+  canViewTask,
+  enforceWorkspaceIsolation,
+  taskController.getTaskMeetingHistory
+);
+
+/**
+ * LEGACY COMMENT ROUTES (Keep for backward compatibility)
  */
 
 // @route   POST /api/tasks/:id/comments
-// @desc    Add comment to task
+// @desc    Add comment to task (legacy - use personal notes instead)
 // @access  Private
 router.post(
   '/:id/comments',
@@ -218,11 +515,16 @@ router.post(
   canViewTask,
   enforceWorkspaceIsolation,
   validateComment,
+  (req, res, next) => {
+    // Add deprecation warning
+    res.set('X-Deprecated', 'Use /notes endpoint instead');
+    next();
+  },
   taskController.addComment
 );
 
 /**
- * Manager Meeting Routes
+ * MANAGER MEETING FEATURES
  */
 
 // @route   POST /api/tasks/:id/manager-feedback
@@ -251,7 +553,7 @@ router.patch(
 );
 
 /**
- * Time Tracking Routes
+ * TIME TRACKING ROUTES
  */
 
 // @route   POST /api/tasks/:id/time/start
@@ -278,28 +580,39 @@ router.post(
 );
 
 /**
- * Bulk Operations Routes
+ * BULK OPERATIONS ROUTES (Future Implementation)
  */
 
 // @route   PATCH /api/tasks/bulk/status
 // @desc    Bulk update task status
 // @access  Private
 router.patch('/bulk/status', taskOperationsLimiter, (req, res, next) => {
-  // TODO: Implement bulk status update
   res.status(501).json({
     status: 'error',
-    message: 'Bulk operations will be implemented in future version'
+    message: 'Bulk operations will be implemented in future version',
+    suggestion: 'Use individual task update endpoints for now'
   });
 });
 
-// @route   PATCH /api/tasks/bulk/assign
-// @desc    Bulk assign tasks
+// @route   PATCH /api/tasks/bulk/priority
+// @desc    Bulk update task priority
 // @access  Private
-router.patch('/bulk/assign', taskOperationsLimiter, (req, res, next) => {
-  // TODO: Implement bulk assignment
+router.patch('/bulk/priority', taskOperationsLimiter, (req, res, next) => {
   res.status(501).json({
     status: 'error',
-    message: 'Bulk operations will be implemented in future version'
+    message: 'Bulk operations will be implemented in future version',
+    suggestion: 'Use individual task update endpoints for now'
+  });
+});
+
+// @route   PATCH /api/tasks/bulk/key-task
+// @desc    Bulk toggle key task status
+// @access  Private
+router.patch('/bulk/key-task', taskOperationsLimiter, (req, res, next) => {
+  res.status(501).json({
+    status: 'error',
+    message: 'Bulk operations will be implemented in future version',
+    suggestion: 'Use individual key-task toggle endpoints for now'
   });
 });
 
@@ -307,15 +620,15 @@ router.patch('/bulk/assign', taskOperationsLimiter, (req, res, next) => {
 // @desc    Bulk delete tasks
 // @access  Private
 router.delete('/bulk/delete', taskOperationsLimiter, (req, res, next) => {
-  // TODO: Implement bulk delete
   res.status(501).json({
     status: 'error',
-    message: 'Bulk operations will be implemented in future version'
+    message: 'Bulk operations will be implemented in future version',
+    suggestion: 'Use individual task delete endpoints for now'
   });
 });
 
 /**
- * Development/Testing Routes (only available in development)
+ * DEVELOPMENT/TESTING ROUTES (only available in development)
  */
 if (process.env.NODE_ENV === 'development') {
   // @route   GET /api/tasks/dev/test-permissions/:id
@@ -358,40 +671,71 @@ if (process.env.NODE_ENV === 'development') {
       }
     });
   });
+
+  // @route   GET /api/tasks/dev/meeting-data
+  // @desc    Test meeting preparation data (development only)
+  // @access  Private
+  router.get('/dev/meeting-data', taskController.getMeetingPreparationData);
 }
 
 /**
- * Route documentation endpoint
+ * COMPREHENSIVE ROUTE DOCUMENTATION
  */
 router.get('/docs', (req, res) => {
   const routes = {
-    tasks: {
+    overview: {
+      description: 'Enhanced Task Management API with Manager Meeting Features',
+      version: '2.0.0',
+      baseUrl: '/api/tasks',
+      authentication: 'Required for all endpoints',
+      workspaceContext: 'Required for all endpoints'
+    },
+    coreTasks: {
       'GET /': 'Get all tasks with filtering and pagination',
       'POST /': 'Create new task',
-      'GET /key-tasks': 'Get key tasks for manager meetings',
-      'GET /analytics': 'Get task analytics and insights',
-      'GET /:id': 'Get single task by ID',
+      'GET /:id': 'Get single task by ID with meeting context',
       'PATCH /:id': 'Update task',
       'DELETE /:id': 'Delete (archive) task'
+    },
+    managerMeetingFeatures: {
+      'GET /key-tasks': 'Get key tasks for manager meetings',
+      'GET /meeting-preparation': 'Get comprehensive meeting preparation data',
+      'GET /ready-for-discussion': 'Get tasks ready for discussion',
+      'PATCH /:id/meeting-prep': 'Add meeting preparation notes',
+      'PATCH /:id/key-task': 'Toggle key task status'
     },
     subtasks: {
       'POST /:id/subtasks': 'Add subtask to task',
       'PATCH /:id/subtasks/:subtaskId': 'Toggle subtask completion'
     },
-    comments: {
-      'POST /:id/comments': 'Add comment to task'
+    personalNotes: {
+      'POST /:id/notes': 'Add personal note to task',
+      'PATCH /:id/notes/:noteId': 'Update personal note',
+      'DELETE /:id/notes/:noteId': 'Delete personal note'
     },
-    managerFeatures: {
-      'POST /:id/manager-feedback': 'Add manager feedback to task',
-      'PATCH /:id/key-task': 'Toggle key task status'
+    blockers: {
+      'POST /:id/blockers': 'Add blocker to task',
+      'PATCH /:id/blockers/:blockerId': 'Resolve task blocker'
+    },
+    meetingHistory: {
+      'POST /:id/meeting-history': 'Add meeting history entry',
+      'GET /:id/meeting-history': 'Get meeting history for task'
+    },
+    legacyFeatures: {
+      'POST /:id/comments': 'Add comment to task (deprecated - use /notes)',
+      'POST /:id/manager-feedback': 'Add manager feedback to task'
     },
     timeTracking: {
       'POST /:id/time/start': 'Start time tracking for task',
       'POST /:id/time/stop': 'Stop time tracking for task'
     },
-    bulk: {
+    analytics: {
+      'GET /analytics': 'Get task analytics and insights'
+    },
+    bulkOperations: {
       'PATCH /bulk/status': 'Bulk update task status (coming soon)',
-      'PATCH /bulk/assign': 'Bulk assign tasks (coming soon)',
+      'PATCH /bulk/priority': 'Bulk update task priority (coming soon)',
+      'PATCH /bulk/key-task': 'Bulk toggle key task status (coming soon)',
       'DELETE /bulk/delete': 'Bulk delete tasks (coming soon)'
     },
     rateLimits: {
@@ -402,42 +746,76 @@ router.get('/docs', (req, res) => {
     queryParameters: {
       'status': 'Filter by task status (string or array)',
       'priority': 'Filter by priority (string or array)',
-      'assignedTo': 'Filter by assigned user ID',
       'category': 'Filter by category name',
       'tags': 'Filter by tags (string or array)',
       'isKeyTask': 'Filter key tasks (boolean)',
-      'myTasks': 'Filter user\'s tasks (boolean)',
       'dueDateFrom/To': 'Filter by due date range',
       'createdFrom/To': 'Filter by creation date range',
-      'page': 'Page number for pagination',
-      'limit': 'Items per page (max 100)',
-      'sortBy': 'Sort field (title, priority, status, dueDate, etc.)',
-      'sortOrder': 'Sort direction (asc/desc)'
+      'page': 'Page number for pagination (default: 1)',
+      'limit': 'Items per page (max 100, default: 25)',
+      'sortBy': 'Sort field (title, priority, status, dueDate, createdAt, updatedAt, lastActivityAt)',
+      'sortOrder': 'Sort direction (asc/desc, default: desc)',
+      'daysSince': 'Days since last discussion (for ready-for-discussion endpoint, default: 7)'
+    },
+    noteTypes: {
+      'general': 'General notes about the task',
+      'progress': 'Progress updates and status notes',
+      'blocker': 'Notes about blockers or impediments',
+      'idea': 'Ideas and suggestions for the task',
+      'meeting_prep': 'Notes for manager meeting preparation'
+    },
+    blockerSeverity: {
+      'low': 'Minor blocker, low impact',
+      'medium': 'Moderate blocker, some impact',
+      'high': 'Major blocker, significant impact',
+      'critical': 'Critical blocker, blocks all progress'
+    },
+    taskStatuses: {
+      'todo': 'Task not started',
+      'in_progress': 'Task is being worked on',
+      'blocked': 'Task is blocked by dependencies',
+      'review': 'Task completed, pending review',
+      'done': 'Task completed and approved',
+      'cancelled': 'Task cancelled'
+    },
+    taskPriorities: {
+      'low': 'Low priority task',
+      'medium': 'Medium priority task (default)',
+      'high': 'High priority task',
+      'urgent': 'Urgent priority task'
     }
   };
 
   if (process.env.NODE_ENV === 'development') {
     routes.development = {
       'GET /dev/test-permissions/:id': 'Test permission system',
-      'GET /dev/filters': 'Test query filter validation'
+      'GET /dev/filters': 'Test query filter validation',
+      'GET /dev/meeting-data': 'Test meeting preparation data'
     };
   }
 
   res.json({
     status: 'success',
-    message: 'Task API documentation',
+    message: 'Enhanced Task API Documentation with Manager Meeting Features',
     data: routes
   });
 });
 
 /**
- * Error handling for undefined routes
+ * ERROR HANDLING FOR UNDEFINED ROUTES
  */
 router.use('*', (req, res) => {
   res.status(404).json({
     status: 'fail',
     message: `Task endpoint ${req.originalUrl} not found`,
-    suggestion: 'Check /api/tasks/docs for available endpoints'
+    suggestion: 'Check /api/tasks/docs for available endpoints',
+    availableEndpoints: [
+      'GET /api/tasks/docs - API documentation',
+      'GET /api/tasks - List all tasks',
+      'GET /api/tasks/meeting-preparation - Meeting prep data',
+      'GET /api/tasks/key-tasks - Key tasks for meetings',
+      'POST /api/tasks - Create new task'
+    ]
   });
 });
 
