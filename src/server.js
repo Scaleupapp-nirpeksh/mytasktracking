@@ -32,7 +32,7 @@ const startServer = async () => {
     // Connect to the database before starting the server
     await connectDB();
 
-    server.listen(PORT, () => {
+    server.listen(PORT, '0.0.0.0', () => {
       logger.info(`Server is running on port ${PORT} in ${process.env.NODE_ENV} mode.`);
       
       // Initialize and start all cron jobs after the server is running
