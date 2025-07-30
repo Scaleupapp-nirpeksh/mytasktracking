@@ -6,7 +6,7 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const mongoSanitize = require('express-mongo-sanitize');
 const hpp = require('hpp');
-const morgan = 'morgan';
+const morgan = require('morgan');  // ✅ This is correct
 
 const AppError = require('./utils/appError');
 const globalErrorHandler = require('./api/controllers/errorController');
